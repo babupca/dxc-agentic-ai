@@ -1,7 +1,7 @@
 {
   "session": "S03",
-  "section": "Lab 2A",
-  "section_idx": 2,
+  "section": "\u2461 Chunking",
+  "section_idx": 3,
   "sections_total": 10,
   "xp_total": 26,
   "active_minutes": 24,
@@ -13,5 +13,5 @@
     "lab2c": false
   },
   "participant": null,
-  "updated_at": "2026-10-05T06:13:49.113596+00:00"
+  "updated_at": "2026-10-05T06:18:44.504594+00:00"
 }
