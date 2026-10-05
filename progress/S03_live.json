@@ -1,17 +1,17 @@
 {
   "session": "S03",
-  "section": "\u2460 Embeddings",
-  "section_idx": 1,
+  "section": "Lab 2A",
+  "section_idx": 2,
   "sections_total": 10,
-  "xp_total": 11,
-  "active_minutes": 16,
-  "quiz_answered": 0,
-  "quiz_correct": 0,
+  "xp_total": 26,
+  "active_minutes": 20,
+  "quiz_answered": 4,
+  "quiz_correct": 2,
   "labs_self_reported": {
     "lab2a": false,
     "lab2b": false,
     "lab2c": false
   },
   "participant": null,
-  "updated_at": "2026-10-05T04:51:40.189766+00:00"
+  "updated_at": "2026-10-05T04:57:41.092517+00:00"
 }
