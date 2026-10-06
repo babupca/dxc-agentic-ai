@@ -31,20 +31,14 @@ EMBED_MODEL = "amazon.titan-embed-text-v2:0"
 
 def embed(client, text, dimensions=512):
     """Return the embedding of `text` as a list of floats."""
-    # TODO-1: Ask Titan to turn `text` into a vector of numbers.
-    # WHY:   Titan is a model on AWS. We send it text, it sends back 512 numbers
-    #        that capture the meaning. We never read the numbers; we only compare them.
-    # STEPS: (1) build the request as JSON with the text, the size and normalize=True
-    #            (normalize=True keeps every vector the same length, so scores are fair)
-    #        (2) call client.invoke_model with the model id and that body
-    #        (3) the reply body is a stream: read it, parse the JSON, take "embedding"
-    # SKELETON (fill the ___):
-    #   body = json.dumps({"inputText": ___, "dimensions": ___, "normalize": True})
-    #   response = client.invoke_model(modelId=___, body=body)
-    #   result = json.loads(response["body"].___())
-    #   return result["___"]
-    # My prediction: how many numbers will come back for one sentence? ____
-    raise NotImplementedError("TODO-1")
+    # TODO-1: Call Titan Text Embeddings v2 through Bedrock.
+    #   body = json.dumps({"inputText": text, "dimensions": dimensions, "normalize": True})
+    #   response = client.invoke_model(modelId=EMBED_MODEL, body=body)
+    #   result = json.loads(response["body"].read())
+    #   return result["embedding"]
+    body = json.dumps({"inputText": text, "dimensions": dimensions, "normalize": True})
+    response = client.invoke_model(modelId=EMBED_MODEL, body=body)
+    return json.loads(response["body"].read())["embedding"]
 
 
 def cosine(a, b):
@@ -55,10 +49,8 @@ def cosine(a, b):
     #        is the angle between the arrows, ignoring how long they are.
     # STEPS: multiply the two vectors element by element and add up (np.dot), then
     #        divide by the length of each vector (np.linalg.norm). Return a float().
-    # SKELETON:  float( np.dot(a, b) / ( np.linalg.norm(___) * np.linalg.norm(___) ) )
-    # My prediction: score for ("locked out of account", "can't sign in") will be
-    #        close to ____ and for ("locked out", "printer jammed") close to ____
-    raise NotImplementedError("TODO-2")
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
 
 
 def top_k(query_vec, items, k=3):
@@ -70,9 +62,9 @@ def top_k(query_vec, items, k=3):
     # STEPS: (1) give every item a score with your cosine() function
     #        (2) sort the scores, highest first
     #        (3) keep only the first k and return them as {"id": ..., "score": ...}
-    # Hint:  sorted(list, key=lambda x: x["score"], reverse=___) and list[:k]
-    # My prediction: will the top match for "VPN keeps dropping" be a VPN article? ____
-    raise NotImplementedError("TODO-3")
+    scored = [{"id": it["id"], "score": cosine(query_vec, it["vector"])} for it in items]
+    return sorted(scored, key=lambda h: h["score"], reverse=True)[:k]
+
 
 
 PAIRS = [
