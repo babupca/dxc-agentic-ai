@@ -71,7 +71,7 @@ def build_agent(model, tools, middleware=None):
         middleware=middleware or []
     Use exactly these names. Then run:  python check.py 6a
     """
-    return None  # TODO-1: replace this line with: return create_agent(...)
+    return create_agent(model=model, tools=tools, system_prompt=SYSTEM_PROMPT, middleware=middleware or [])
 
 
 def ask(agent, question):
