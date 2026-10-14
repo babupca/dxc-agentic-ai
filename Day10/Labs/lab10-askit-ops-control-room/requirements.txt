@@ -6,3 +6,4 @@ boto3
 python-dotenv
 streamlit>=1.40
 pandas
+langsmith>=0.4

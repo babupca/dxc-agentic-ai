@@ -116,7 +116,7 @@ class Tracer:
         cm = obs = None
         try:
             if self.lf:
-                cm = self.lf.start_as_current_observation(name=name, as_type="generation" if kind == "llm" else "tool", input=s["input"],
+                cm = self.lf.start_as_current_observation(name=name, as_type="generation" if kind == "llm" else ("retriever" if name == "search_kb" else "tool"), input=s["input"],
                                                            model=self.trace["model"] if kind == "llm" else None)
                 obs = cm.__enter__()
         except Exception:                                               # noqa: BLE001

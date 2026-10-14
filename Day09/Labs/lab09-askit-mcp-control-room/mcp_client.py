@@ -383,6 +383,11 @@ SYSTEM = ("You are AskIT, the IT helpdesk agent of Orbit Corp. Use the tools you
           "a password for an employee id. If a tool reports an error, say so honestly. Answer in 2-3 short sentences.")
 
 
+# Tab 3 only: a NEUTRAL prompt with no tool hints, so the model must choose from the descriptions alone.
+# (SYSTEM above names the right tool for each kind of question and would hide bad descriptions.)
+PROBE_SYSTEM = "You are the AskIT helpdesk agent. Use the tools you are given to answer the user."
+
+
 def build_tools(client, asked, mcp_tools, ctl, home, trace, desc_override=None):
     """Turn each MCP tool into a LangChain tool. The model sees ONLY name + description + inputs."""
     from langchain_core.tools import StructuredTool
@@ -471,7 +476,7 @@ async def probe_tool_choice(questions, home, ctl, model, desc_override):
         bound = model.bind_tools(tools)
         for q in questions:
             try:
-                reply = await bound.ainvoke([{"role": "system", "content": SYSTEM}, {"role": "user", "content": q}])
+                reply = await bound.ainvoke([{"role": "system", "content": PROBE_SYSTEM}, {"role": "user", "content": q}])
                 calls = [c["name"] for c in (getattr(reply, "tool_calls", None) or [])]
                 u = getattr(reply, "usage_metadata", None) or {}
                 picks.append({"picked": calls[0] if calls else "(no tool)", "tokens_in": u.get("input_tokens", 0),

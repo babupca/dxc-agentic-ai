@@ -36,11 +36,18 @@ html, body, [class*="css"] {font-size:18px;}
 .back{background:rgba(31,90,166,.10);border-left:6px solid #1F5AA6;padding:12px 16px;border-radius:10px;margin:8px 0}
 .warn{background:rgba(183,121,31,.16);border:2px solid #B7791F;padding:14px 18px;border-radius:12px;margin:8px 0}
 .ans{background:rgba(127,127,127,.10);border-radius:10px;padding:10px 14px;margin:6px 0}
+.lesson{background:linear-gradient(135deg,rgba(245,166,35,.28),rgba(245,166,35,.10));border:3px solid #E08A00;padding:16px 20px;border-radius:14px;margin:14px 0}
+.lesson b.h{font-size:1.15em}
+.lock{background:rgba(127,127,127,.10);border:2px dashed rgba(127,127,127,.5);padding:12px 16px;border-radius:12px;margin:10px 0;opacity:.85}
+.cwlf{background:rgba(31,90,166,.10);border:2px solid #1F5AA6;padding:14px 18px;border-radius:12px;margin:10px 0}
+.big{font-size:1.15em;line-height:1.9;margin:10px 0}
+.stepbig{background:rgba(127,127,127,.10);border-left:8px solid #0E7068;padding:16px 20px;border-radius:12px;margin:26px 0 10px 0;font-size:1.1em}
+div[data-baseweb="tab-list"] button:last-child{background:rgba(245,166,35,.28);border-radius:10px 10px 0 0;font-weight:700}
 </style>""", unsafe_allow_html=True)
 
 S = st.session_state
 for k, v in {"last": None, "traces": [], "myst_ok": {}, "myst_checked": {}, "batches": [], "eval_runs": ev.load_runs(), "retr": None,
-             "extra_cases": [], "quiz": {}, "lf_on": True}.items():
+             "extra_cases": [], "quiz": {}, "lf_on": True, "think": {}, "lessons": {}}.items():
     S.setdefault(k, v)
 
 QUESTIONS = ["My VPN shows error 809 - what should I try?", "Summarise ticket TKT-0004 and tell me the next step.",
@@ -64,18 +71,19 @@ def lf_now():
 
 
 def save_keys(block, host_choice):
-    """Parse the 3 lines the trainer sent and write them to this lab's own .env file (never committed)."""
-    vals = dict(re.findall(r"(LANGFUSE_[A-Z_]+)\s*=\s*(\S+)", block))
-    if "LANGFUSE_PUBLIC_KEY" not in vals or "LANGFUSE_SECRET_KEY" not in vals:
-        return False, "I could not find LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY in what you pasted."
-    vals.setdefault("LANGFUSE_HOST", host_choice)
+    """Find the two keys in what was pasted (with or without the NAME= part) and write them to this lab's own .env file."""
+    pk, sk = re.search(r"pk-lf-[\w-]+", block), re.search(r"sk-lf-[\w-]+", block)
+    if not (pk and sk):
+        return False, "I need both keys: one starting pk-lf- and one starting sk-lf-. Copy them again from Langfuse."
+    hm = re.search(r"LANGFUSE_HOST\s*=\s*(\S+)", block)
+    vals = {"LANGFUSE_PUBLIC_KEY": pk.group(0), "LANGFUSE_SECRET_KEY": sk.group(0), "LANGFUSE_HOST": hm.group(1) if hm else host_choice}
     env = HERE / ".env"
     old = [ln for ln in (env.read_text(encoding="utf-8").splitlines() if env.is_file() else []) if not ln.startswith("LANGFUSE_")]
     env.write_text("\n".join(old + [f"{k}={v}" for k, v in vals.items()]) + "\n", encoding="utf-8")
     for k, v in vals.items():
         os.environ[k] = v
     lf_for.clear()
-    return True, "Saved to the .env file inside this lab folder (it is never pushed to GitHub)."
+    return True, "Saved to the .env file inside this lab folder (it is never pushed to GitHub). Only runs you do from now on are sent."
 
 
 def flags_text(f):
@@ -98,8 +106,9 @@ def do_run(question, provider, prompt_name, flags, tags=None, model=None, lf="ma
     return tr.trace
 
 
-def show_html(html, h):
-    """Show an SVG picture. st.iframe is the new way; components.html is kept for older Streamlit versions."""
+def show_html(html, h, scale=1.35):
+    """Show an SVG picture. The picture grows with the window width, so the frame is made taller (scale) to avoid a scroll bar inside it."""
+    h = int(h * scale)
     if hasattr(st, "iframe"):
         st.iframe(html, height=h)
     else:
@@ -111,7 +120,7 @@ def show_waterfall(trace):
     show_html(html, h)
 
 
-def metrics(trace):
+def metrics(trace, explain=False):
     c = st.columns(6)
     c[0].metric("Time", f"{trace.get('ms', 0) / 1000:.1f} s")
     c[1].metric("Model calls", trace.get("llm_calls", 0))
@@ -119,11 +128,44 @@ def metrics(trace):
     c[3].metric("Tokens in", f"{trace.get('tokens_in', 0):,}")
     c[4].metric("Tokens out", f"{trace.get('tokens_out', 0):,}")
     c[5].metric("Cost", f"${trace.get('cost_usd', 0):.6f}")
+    if explain:
+        st.caption("**Time** = question to final answer · **Model calls** = how many times the AI was asked · **Tool calls** = lookups it ran · "
+                   "**Tokens in** = everything the model READ on every call (instructions + history + tool results) · **Tokens out** = what it WROTE · "
+                   "**Cost** = in × price + out × price. On AWS Bedrock these are AWS's real counts; on Offline they are estimates.")
 
 
 def pct(vals, p):
     vals = sorted(vals)
     return vals[min(len(vals) - 1, max(0, round(p / 100 * (len(vals) - 1))))] if vals else 0
+
+
+def lesson_box(text):
+    st.markdown(f'<div class="lesson"><b class="h">🎓 Lesson learnt</b><br>{text}</div>', unsafe_allow_html=True)
+
+
+def thinking(tab, items, lesson):
+    """Two thinking questions per tab. Answering both unlocks the lesson, which is also collected in the last tab."""
+    st.divider()
+    st.markdown("### 🧠 Think before you move on")
+    for i, (text, opts, right, why) in enumerate(items):
+        key = f"{tab}_{i}"
+        st.markdown(f"**{i + 1}. {text}**")
+        a = st.radio("answer", [f"{k.upper()} · {v}" for k, v in opts.items()], key=f"th_{key}", index=None, label_visibility="collapsed")
+        if st.button("Check", key=f"thb_{key}", disabled=a is None):
+            S.think[key] = a[0].lower() == right
+        if key in S.think:
+            (st.success if S.think[key] else st.error)(("✅ " if S.think[key] else f"The answer is {right.upper()}. ") + why)
+    if all(f"{tab}_{i}" in S.think for i in range(len(items))):
+        S.lessons[tab] = lesson
+        lesson_box(lesson)
+    else:
+        st.markdown('<div class="lock">🔒 Answer both questions to unlock the lesson for this tab.</div>', unsafe_allow_html=True)
+
+
+CW_VS_LF = ('<div class="cwlf"><b>⭐ The most important difference</b><br>'
+            '<b>CloudWatch sees the model calls only</b> (who called, which model, how many tokens).<br>'
+            '<b>Langfuse sees the whole agent run</b> (model calls + tool calls + the order + the answer).<br>'
+            'CloudWatch answers <i>"who spent the money?"</i>. Langfuse answers <i>"why was this answer wrong?"</i>. You need both.</div>')
 
 
 def aws_user():
@@ -166,10 +208,12 @@ with st.sidebar:
         st.checkbox("Send every run to Langfuse", key="lf_on")
         if st.button("Test the connection"):
             st.info(ot.langfuse_check(lf_for(os.getenv("LANGFUSE_PUBLIC_KEY", ""), os.getenv("LANGFUSE_SECRET_KEY", ""), os.getenv("LANGFUSE_HOST", "")))[1])
+        st.caption("Only runs you do AFTER connecting are sent. Run your question again.")
     with st.expander("Enter the team keys" if not have else "Change the team keys", expanded=not have):
-        st.caption("Your trainer sends 3 lines (LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST). Paste them all here. No keys? Skip this: the lab works without Langfuse.")
-        block = st.text_area("Paste the 3 lines", height=100, label_visibility="collapsed", placeholder="LANGFUSE_PUBLIC_KEY=pk-lf-...")
-        host_choice = st.selectbox("If there is no LANGFUSE_HOST line", ["https://cloud.langfuse.com", "https://us.cloud.langfuse.com"])
+        st.caption("Langfuse gives you two keys: a **public** key (starts pk-lf-) and a **secret** key (starts sk-lf-). Paste both, one per line, then choose the region.")
+        block = st.text_area("Paste the 2 keys", height=90, label_visibility="collapsed", placeholder="pk-lf-...\nsk-lf-...")
+        host_choice = st.selectbox("Region of your Langfuse project", ["https://cloud.langfuse.com", "https://us.cloud.langfuse.com"],
+                                   format_func=lambda h: "EU (cloud.langfuse.com)" if h == "https://cloud.langfuse.com" else "US (us.cloud.langfuse.com)")
         if st.button("Save the keys"):
             ok, msg = save_keys(block, host_choice)
             (st.success if ok else st.error)(msg)
@@ -184,9 +228,18 @@ st.markdown("**The question of the day:** AskIT works in a demo. In production, 
             "Most failures of AI agents do not crash anything.")
 st.info("**Folder:** `C:\\AskIT\\dxc-agentic-ai\\Day10\\Labs\\lab10-askit-ops-control-room` · Work through the tabs from left to right. "
         "You do not need to write any code.")
+with st.expander("🧭 Which mode do I run each tab in? (Offline first, then AWS Bedrock)"):
+    st.dataframe(pd.DataFrame([
+        {"tab": "1 · Run and trace", "Offline stand-in (no AI, no AWS)": "✅ Learn the waterfall and the switches", "AWS Bedrock (real model)": "✅ Repeat: real tokens, real times. Tab 1 numbers = CloudWatch numbers", "Langfuse keys": "A link to the trace appears"},
+        {"tab": "2 · Find the failure", "Offline stand-in (no AI, no AWS)": "✅ Recorded traces, same for everyone", "AWS Bedrock (real model)": "Not needed", "Langfuse keys": "Not needed"},
+        {"tab": "3 · Cost report", "Offline stand-in (no AI, no AWS)": "✅ Shape of the cost (estimated tokens)", "AWS Bedrock (real model)": "✅ Repeat: real cost per ticket", "Langfuse keys": "Runs are sent"},
+        {"tab": "4 · Evals", "Offline stand-in (no AI, no AWS)": "✅ Mechanics: v1 → v2 → v3", "AWS Bedrock (real model)": "✅ Repeat: a real model may ignore a rule. Compare", "Langfuse keys": "Scores are sent"},
+        {"tab": "5 · See it in AWS", "Offline stand-in (no AI, no AWS)": "❌ Nothing to see: no AWS call was made", "AWS Bedrock (real model)": "✅ Required: run tab 1 on Bedrock first", "Langfuse keys": "Not needed"},
+        {"tab": "6 · 7 · 8", "Offline stand-in (no AI, no AWS)": "✅ Any mode", "AWS Bedrock (real model)": "Any mode", "Langfuse keys": "Not needed"}]), hide_index=True)
+    st.caption("Plan: do tabs 1–4 Offline first (fast, free, same for everyone). Then switch to AWS Bedrock in the sidebar and repeat tabs 1, 3 and 4, then do tab 5.")
 tabs = st.tabs(["🔭 1 · Run and trace", "🕵️ 2 · Find the failure", "💰 3 · Cost report", "✅ 4 · Evals", "☁️ 5 · See it in AWS",
-                "🏗️ 6 · How it works", "❓ 7 · Questions + products", "📝 8 · Team ADR"])
-t1, t2, t3, t4, t5, t6, t7, t8 = tabs
+                "🏗️ 6 · How it works", "❓ 7 · Questions + products", "📝 8 · Team ADR", "🎓 Lessons learnt"])
+t1, t2, t3, t4, t5, t6, t7, t8, t9 = tabs
 
 # ================================================================================================ tab 1
 with t1:
@@ -212,7 +265,7 @@ with t1:
     if t is None:
         st.caption("No run yet. Press Run AskIT.")
     else:
-        metrics(t)
+        metrics(t, explain=True)
         if t["status"] != "ok":
             st.markdown(f'<div class="warn"><b>Status: {t["status"]}.</b> The run did not end normally. Find the step in the waterfall that explains why.</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="ans"><b>Question:</b> {t["question"]}<br><b>Answer:</b> {t["answer"]}</div>', unsafe_allow_html=True)
@@ -231,14 +284,41 @@ with t1:
         else:
             b.markdown("**2 · Langfuse**  \nNot connected yet. Enter your team keys in the sidebar (left).")
         c.markdown("**3 · AWS CloudWatch**  \nBedrock logs each **model call** on its own (not your tools). Go to tab 5 to find yours.")
+        st.markdown(CW_VS_LF, unsafe_allow_html=True)
     if S.traces:
         st.subheader("Compare your runs")
-        st.dataframe(pd.DataFrame(S.traces[-8:]).rename(columns={"ms": "time ms", "llm_calls": "model calls", "tool_calls": "tool calls", "tokens_in": "tokens in", "cost_usd": "cost $"}), hide_index=True)
+        plain = {}
+        for r in S.traces:
+            if r["flags"] == "none":
+                plain.setdefault(r["question"], r)
+        rows = []
+        for r in S.traces[-8:]:
+            b0 = plain.get(r["question"])
+            if b0 is r:
+                vs = "plain run (reference)"
+            elif b0 and b0.get("tokens_in") and b0.get("cost_usd"):
+                vs = f"tokens ×{(r['tokens_in'] or 0) / b0['tokens_in']:.1f} · cost ×{(r['cost_usd'] or 0) / b0['cost_usd']:.1f}"
+            else:
+                vs = "run this question with no switch first"
+            rows.append({"question": r["question"][:42], "switch ticked": r["flags"], "time s": round((r["ms"] or 0) / 1000, 1), "model calls": r["llm_calls"],
+                         "tool calls": r["tool_calls"], "tokens in": r["tokens_in"], "cost $": r["cost_usd"], "vs plain run": vs, "status": r["status"]})
+        st.dataframe(pd.DataFrame(rows), hide_index=True)
+        st.caption("Each switch hurts a different question: 🔁 stuck and 🐌 slow hit the ticket question, 🐘 huge results hits the how-to question, 📚 padded hits every question. "
+                   "Compare a run only with a plain run of the SAME question.")
     st.markdown('<div class="take"><b>🎯 Takeaway.</b> A trace is a flight recorder. Without it you only know that the answer was bad; with it you know '
                 '<i>which step</i> made it bad. Switch on one failure, then read the two things that change: the <b>shape</b> of the waterfall and the '
                 '<b>tokens</b>.</div>', unsafe_allow_html=True)
     st.markdown('<div class="client"><b>💼 Say this to a client.</b> "Before go-live we record every step of every run: what the AI was asked, which tool it used, '
                 'how long and how many tokens each step took. That is how we find problems no alarm would catch."</div>', unsafe_allow_html=True)
+    thinking("t1", [
+        ("You tick 🐘 Huge search results and ask the VPN question. Which number jumps the most?",
+         {"a": "Tool calls", "b": "Tokens in of the NEXT model call (it must read the huge result)", "c": "Tokens out", "d": "Nothing changes"}, "b",
+         "The tool result is pasted into the history, and the model reads the whole history again on its next call."),
+        ("A user complains 'AskIT is slow', yet its final answer is correct. What does the final answer tell you about WHY it was slow?",
+         {"a": "Which step was slow: the final answer shows it", "b": "That the model is too small", "c": "Nothing. Only the trace shows which step was slow", "d": "That the network is down"}, "c",
+         "A correct answer can hide a slow tool, a retry or a loop. Only the step-by-step trace shows where the time went."),
+    ], "<b>You cannot diagnose an agent from the complaint or from the final answer.</b> Only the trace shows which step (a model call or a tool call) caused the problem. "
+       "That is why we record every step.")
 
 # ================================================================================================ tab 2
 with t2:
@@ -274,6 +354,15 @@ with t2:
                 'You only find these if you look at traces.</div>', unsafe_allow_html=True)
     st.markdown('<div class="client"><b>💼 Say this to a client.</b> "When someone says the AI is slow or wrong, the first thing we open is the trace. '
                 'It tells us in a minute whether to fix the prompt, the tool, the data or the model, instead of guessing and paying for a bigger model."</div>', unsafe_allow_html=True)
+    thinking("t2", [
+        ("The answer was wrong and the trace has NO error and NO red bar. What is the first thing to look at?",
+         {"a": "The AWS bill", "b": "Which tool spans are there, and which one is missing", "c": "The colour of the bars", "d": "The VM memory"}, "b",
+         "A silent failure shows as a missing or wrong tool span. Nothing crashes, so you only see it by reading the steps."),
+        ("Two complaints say 'it is slow'. In one trace the WIDE bar is a model call, in the other it is a tool call. Who do you talk to?",
+         {"a": "Same person for both: the prompt writer", "b": "Model call wide → check the prompt size / model. Tool call wide → the owner of that system", "c": "Nobody, slowness is normal", "d": "Always buy a bigger model"}, "b",
+         "The same complaint has different root causes. The shape of the waterfall tells you whose problem it is."),
+    ], "<b>The same complaint ('slow', 'wrong') can have four different root causes</b>: a loop, a huge input, a missing tool, a slow system. Each leaves a different signal in the trace "
+       "and has a different owner. Read the shape of the trace, not the answer.")
 
 # ================================================================================================ tab 3
 with t3:
@@ -348,6 +437,15 @@ with t3:
                 '(trim prompts and tool results, stop loops), <b>caching</b>, then <b>the right model for the job</b>. Switching to a bigger model is the LAST lever, not the first.</div>', unsafe_allow_html=True)
     st.markdown('<div class="client"><b>💼 Say this to a client.</b> "We give you cost per ticket, measured on your own data, and what it becomes at your volume with each model. '
                 'We also set a budget alarm and a step limit, so a loop cannot turn into a surprise invoice."</div>', unsafe_allow_html=True)
+    thinking("t3", [
+        ("Why does each extra step in a run cost MORE than the step before it?",
+         {"a": "The model gets tired", "b": "Prices go up during a run", "c": "Every call re-sends the whole history (prompt + earlier results) as input tokens", "d": "Tools are charged per second"}, "c",
+         "Input tokens are paid on every call, and the history only grows. That is why loops and long tool results are so expensive."),
+        ("A model costs 10× less per token but needs 3× more steps and fails more tests. Is it the cheaper choice?",
+         {"a": "Yes, always: 10× is bigger than 3×", "b": "Not necessarily: compare cost per SUCCESSFUL ticket, with the pass rate from tab 4", "c": "No, cheap models are always worse", "d": "Price does not matter"}, "b",
+         "Cost per ticket is only half the story. A cheap model that fails the exam costs you in rework."),
+    ], "<b>Cost = tokens × price × tickets.</b> Every step re-sends the whole history, so long prompts, big tool results and loops multiply the bill. "
+       "Cut tokens first (trim, stop loops, cache). Choose a different model last, and judge it by cost per <i>successful</i> ticket.")
 
 # ================================================================================================ tab 4
 with t4:
@@ -355,6 +453,17 @@ with t4:
                 '③ Pick <b>v3</b> and run again. ④ Read the comparison table: which risk category moved, and did anything get worse?</div>', unsafe_allow_html=True)
     st.markdown("Each test question is checked for the risks that apply to it. **Every check is PASS or FAIL**, done by plain code, so the result is the same every time. "
                 "The risks come from failures we saw in tabs 1–2: wrong tool, runaway loop, answer not grounded in the knowledge base, unsafe write, over budget.")
+    st.markdown('<div class="back"><b>This exam is a golden set:</b> a fixed list of questions with known right behaviour (which tool, which article, what must NOT happen). '
+                'Because it never changes, a difference between two runs can only come from the one thing you changed.</div>', unsafe_allow_html=True)
+    with st.expander("📖 What do the numbers mean? (pass %, hit rate, MRR, regression)"):
+        st.markdown("""
+- **Pass % (per risk):** of the questions where this risk applies, how many passed the check. `7/9` = 78%. Every check is PASS or FAIL, done by code.
+- **Hit rate @3:** for each knowledge-base question, is the right article among the **top 3** search results? 10 of 10 → **100%**. It tests the *search*, not the AI.
+- **MRR (mean reciprocal rank):** how *high* the right article is. Rank 1 scores 1.0, rank 2 scores 0.5, rank 3 scores 0.33, not found scores 0. Then take the average. **0.93** means almost always rank 1.
+- **Regression:** a number that was fine before your change and got worse after it. Finding regressions before users do is the whole point of an exam.
+- **Golden set:** the fixed list of test questions. Change ONE thing (the prompt, the model), run the same list, compare.
+- **AI judge:** a second model call that reads the answer and says PASS/FAIL. It costs tokens and can be wrong, so use it only for what code cannot check (tone, helpfulness).
+""")
     with st.expander("📋 The test questions"):
         st.dataframe(pd.DataFrame([{"id": c[0], "question": c[1], "should use first": c[2] or "(no write allowed for VIP)", "article": c[3], "kind": c[4]} for c in ev.CASES + S.extra_cases]), hide_index=True)
     e1, e2, e3 = st.columns([2, 1, 1])
@@ -397,14 +506,21 @@ with t4:
             cmp.append(row)
         st.dataframe(pd.DataFrame(cmp), hide_index=True)
         st.caption("Rule: change ONE thing, run again, compare. If a number you did not expect to move got worse, you found a regression before your users did.")
+        ignored = [r for r in S.eval_runs if r["prompt"][:2] in ("v2", "v3") and "stand-in" not in r["model"].lower() and "offline" not in r["model"].lower()
+                   and r["rate"].get("safe") and r["rate"]["safe"][0] < r["rate"]["safe"][1]]
+        if ignored:
+            st.markdown('<div class="warn"><b>⚠️ A rule in the prompt is a request, not a guarantee.</b> Prompt v2 told the model never to touch a VIP account, yet at least one VIP case still failed '
+                        'with this real model. Only the exam showed it. What would you do? ① a stronger model for VIP cases, ② stricter wording, ③ <b>a guard in the code</b> '
+                        '(the tool itself refuses VIP changes). For safety rules, ③ is the one that always works.</div>', unsafe_allow_html=True)
     st.subheader("Retrieval check (no AI needed)")
     st.markdown("Before blaming the model, check the search: does the right article come back in the top 3? (RAG tools call this *context recall* / *hit rate*.)")
     if st.button("Check the search on 10 knowledge-base questions"):
         S.retr = ev.retrieval_scores()
     if S.retr:
         m1, m2 = st.columns(2)
-        m1.metric("Hit rate @3", f"{S.retr['hit_rate']:.0%}")
-        m2.metric("MRR (higher = right article nearer the top)", f"{S.retr['mrr']:.2f}")
+        m1.metric("Hit rate @3", f"{S.retr['hit_rate']:.0%}", help="Is the right article in the top 3 results? 100% = every time.")
+        m2.metric("MRR (higher = right article nearer the top)", f"{S.retr['mrr']:.2f}", help="Average of 1/rank of the right article. 1.0 = always first.")
+        st.caption("If hit rate is high but answers are still wrong, the search is fine: look at the prompt or the model.")
     with st.expander("➕ Stretch: add a test question of your own"):
         x1, x2, x3 = st.columns(3)
         nq = x1.text_input("Your question", "Can I use my own phone for email?")
@@ -418,12 +534,24 @@ with t4:
                 'the same kinds of checks; you saw how the idea works with no library at all.</div>', unsafe_allow_html=True)
     st.markdown('<div class="client"><b>💼 Say this to a client.</b> "We do not say it works because the demo looked good. We keep a test set from your real tickets, '
                 'it runs on every change, and nothing goes live if a risk category drops below the agreed pass rate."</div>', unsafe_allow_html=True)
+    thinking("t4", [
+        ("Hit rate @3 is 100%, but some answers are still wrong. Where do you look next?",
+         {"a": "The prompt and the model: the search already finds the right article", "b": "The search: it must be broken", "c": "The VM", "d": "Nowhere, 100% means done"}, "a",
+         "Hit rate only says the right article was retrieved. What the model does with it is a different step, and a different check."),
+        ("Prompt v3 fixes the not-found case, but a VIP case that passed in v2 now fails. What is this called, and what do you do?",
+         {"a": "A regression: do not release v3 until it is fixed", "b": "Bad luck: ignore it", "c": "Overfitting: add more questions and release", "d": "Latency: buy a faster model"}, "a",
+         "A change that fixes one thing and breaks another is a regression. The exam exists to catch it before the users do."),
+    ], "<b>An eval is a unit test for AI behaviour:</b> a fixed golden set, PASS/FAIL checks, change one thing, compare. "
+       "<b>A rule in a prompt is a request, not a guarantee.</b> Only the exam tells you if the model obeyed it, and a safety rule belongs in code too.")
 
 # ================================================================================================ tab 5
 with t5:
     arn, user = S.get("who") or ("", "user1xx")
-    st.markdown('<div class="step"><b>Do this (in the AWS console, about 12 minutes):</b> your model calls to Bedrock are logged by AWS itself. '
-                'Find your own calls there and compare them with the trace you made in tab 1. Do tab 1 first, so you have fresh calls.</div>', unsafe_allow_html=True)
+    st.markdown(CW_VS_LF, unsafe_allow_html=True)
+    st.markdown('<div class="stepbig"><b>Step 0 · Make some calls first (in THIS app, 2 minutes)</b><br>'
+                '① Sidebar: choose <b>AWS Bedrock</b> (Offline makes no AWS call, so there is nothing to see).<br>'
+                '② Tab 1: pick <b>Summarise ticket TKT-0004</b>, press <b>Run AskIT</b>. Write down <b>Tokens in</b>.<br>'
+                '③ Wait about 1–2 minutes: AWS delivers the log a little later.</div>', unsafe_allow_html=True)
     if st.button("Who am I in AWS?"):
         S.who = aws_user()
         arn, user = S.who
@@ -434,17 +562,17 @@ with t5:
     group = os.getenv("ASKIT_BEDROCK_LOG_GROUP", "/aws/bedrock/askit-invocations")
     query = ("fields @timestamp, modelId, input.inputTokenCount as tokens_in, output.outputTokenCount as tokens_out\n"
              f"| filter identity.arn like /{uname}/\n| sort @timestamp desc\n| limit 20")
-    st.markdown("**Steps in the console**")
-    st.markdown(f"""1. Open the AWS console, check the top right says **N. Virginia (us-east-1)**.
-2. In the search box type **CloudWatch** and open it.
-3. In the left menu click **Logs**, then **Logs Insights**.
-4. Under *Select log group(s)* choose **{group}**. Set the time range (top right) to **1h**.
-5. Replace the query box with the text below, then click **Run query**.""")
+    st.markdown("**Steps in the AWS console** (about 10 minutes)")
+    st.markdown(f"""1. Open the AWS console and check the top right says **N. Virginia (us-east-1)**. Logs live in one region only: if you are in another region the log group will not be there.
+2. Quick way: open  `https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:logs-insights`
+   Or by menu: search **CloudWatch** → left menu **Logs** → **Log Analytics** → the **Logs Insights** query box.
+3. Under *Select log group(s)* choose **{group}**. Set the time range (top right) to **1h**.
+4. Replace the query box with the text below, then click **Run query**.""")
     st.code(query, language="text")
-    st.markdown("""6. Look at the rows. Each row is **one model call you made**. Add up `tokens_in` for your last run: it should match the *Tokens in* box in tab 1 (small differences are normal; the offline stand-in does not call AWS, so its calls will NOT appear).
-7. Now open **CloudWatch → GenAI Observability → Model invocations** (left menu). These charts show every user's calls: count, latency, tokens. This is the team view an operations group would watch.
-8. **Your Day 9 Lambda:** Lambda → your function → **Monitor** tab → **View CloudWatch Logs**. Same idea for the tool side: AWS logs what it runs.""")
-    st.caption("Logs can take a minute to appear. No rows? Run another question in tab 1 using AWS Bedrock (not Offline) and query again.")
+    st.markdown("""5. Look at the rows. **One row = one model call**, so your Step 0 run shows **2 rows**: call 1 asked for a tool, call 2 wrote the answer. Add the two `tokens_in` values: it should match *Tokens in* in tab 1.
+6. Now open **CloudWatch → GenAI Observability → Model invocations** (left menu). These charts show every user's calls: count, latency, tokens. This is the team view an operations group would watch.
+7. **Your Day 9 Lambda:** Lambda → your function → **Monitor** tab → **View CloudWatch Logs**. Same idea for the tool side: AWS logs what it runs.""")
+    st.caption("No rows? Wait another minute and run the query again. Still nothing: check the region (step 1) and that you ran tab 1 with AWS Bedrock, not Offline.")
     st.subheader("Or fetch it here")
     if st.button("Fetch my last Bedrock calls from CloudWatch"):
         try:
@@ -468,17 +596,29 @@ with t5:
         {"": "Best for", "This app (own tracer)": "Learning how it works", "Langfuse": "Debugging and improving agents; evals; prompt versions", "AWS CloudWatch (Bedrock)": "Audit, usage and cost by user; one team view; alarms"}]), hide_index=True)
     st.markdown('<div class="take"><b>🎯 Takeaway.</b> AWS gives you <b>one side for free</b>: who called which model, with how many tokens. It does not know your agent\'s steps. '
                 'Production teams use <b>both</b>: the cloud log for audit, usage and billing, and an agent-level tracer for debugging. '
-                'Tomorrow-style question: "which team spent the money?" is answered here, "why did this answer go wrong?" is answered by the trace.</div>', unsafe_allow_html=True)
+                '"Which team spent the money?" is answered here. "Why did this answer go wrong?" is answered by the trace.</div>', unsafe_allow_html=True)
     st.markdown('<div class="client"><b>💼 Say this to a client.</b> "On AWS you get an audit trail of every model call in your own account, with no extra vendor. '
                 'We add agent-level tracing on top, and we can send both to the monitoring tool you already use."</div>', unsafe_allow_html=True)
+    thinking("t5", [
+        ("Your agent calls get_ticket 6 times in a row. Can the CloudWatch Bedrock log show you that?",
+         {"a": "Yes, it lists every tool", "b": "No: it only sees the model calls, not your tools", "c": "Only if you pay extra", "d": "Yes, as an error"}, "b",
+         "Bedrock logs sit at the model API. Tool calls run in your code, so only an agent-level trace (Langfuse, your tracer) shows them."),
+        ("The finance team asks 'which team spent how much on models last week?' Which view answers it best?",
+         {"a": "Langfuse trace of one run", "b": "The waterfall in tab 1", "c": "CloudWatch invocation log: who called, which model, how many tokens", "d": "The prompt"}, "c",
+         "Usage and cost by caller is the cloud log's job. Debugging one wrong answer is the trace's job."),
+    ], "<b>CloudWatch sees the model calls only; Langfuse sees the whole agent run.</b> CloudWatch tells you who called which model and how many tokens (audit, usage, billing). "
+       "Langfuse shows every step, tool and decision (debugging). You need both.")
 
 # ================================================================================================ tab 6
 with t6:
     st.markdown('<div class="step"><b>Read this once (3 minutes).</b> The picture shows what each file in this lab does. Nothing here needs editing.</div>', unsafe_allow_html=True)
-    html, h = diagram.architecture(has_langfuse=bool(os.getenv("LANGFUSE_PUBLIC_KEY")))
-    show_html(html, h)
-    html, h = diagram.trace_anatomy()
-    show_html(html, h)
+    pic1, pic2 = st.tabs(["🧩 The pieces of this lab", "🔬 Inside one trace"])
+    with pic1:
+        html, h = diagram.architecture(has_langfuse=bool(os.getenv("LANGFUSE_PUBLIC_KEY")))
+        show_html(html, h)
+    with pic2:
+        html, h = diagram.trace_anatomy()
+        show_html(html, h, scale=1.5)
     st.dataframe(pd.DataFrame([
         {"file": "app.py", "what it does": "The screen: tabs, buttons, tables. Calls the others."},
         {"file": "ops_agent.py", "what it does": "The AskIT agent loop: model call, tool call, repeat, with a limit of 6. Applies the failure switches."},
@@ -491,6 +631,15 @@ with t6:
         {"file": "submission/", "what it does": "Your evidence: traces.jsonl, eval_runs.json, cost_report.csv, your ADR. Pushed to GitHub by SYNC.bat."}]), hide_index=True)
     st.markdown('<div class="back"><b>In production</b> the same pieces exist, with other names: the tracer becomes an SDK (Langfuse, OpenTelemetry) inside your agent, '
                 'the store becomes a service with retention and access control, evals run in your CI pipeline, and alerts watch the numbers you saw in tabs 1–3.</div>', unsafe_allow_html=True)
+    thinking("t6", [
+        ("Which file records every step of a run (the flight recorder)?",
+         {"a": "app.py", "b": "prices.py", "c": "mystery.py", "d": "ops_trace.py"}, "d",
+         "ops_trace.py creates one span per model call and tool call, saves them and sends them to Langfuse."),
+        ("You want to add a new failure switch, for example 'rate limit'. Which file applies the switches in front of the tools?",
+         {"a": "ops_agent.py", "b": "evals.py", "c": "diagram.py", "d": "design_decision.py"}, "a",
+         "run_tool() in ops_agent.py is where the switches (loop, bloat, slow, pad) are applied before the real tool runs."),
+    ], "<b>Tracing is a small piece inside your agent.</b> Everything else in production is about what happens to the traces: where they live, who may read them, "
+       "how long they stay, and who gets woken when the numbers go wrong.")
 
 # ================================================================================================ tab 7
 with t7:
@@ -551,43 +700,89 @@ with t7:
 
 # ================================================================================================ tab 8
 with t8:
-    st.markdown('<div class="step"><b>Team task (12 min, one person per team shares this screen):</b> pick your team, read your curveball, make your choices, write why, press <b>Create</b>. '
-                'The app writes <code>teams\\&lt;your team&gt;\\ADR-AskIT-05.md</code> with your lab numbers already in it. Then pitch it in 2 minutes at <b>Board 5: Ops &amp; FinOps Review</b>.</div>', unsafe_allow_html=True)
-    c1, c2 = st.columns([1, 2])
+    st.markdown('<div class="stepbig"><b>📝 Team exercise · breakout room · 10 minutes, then a 90-second pitch</b><br>'
+                'You will write a one-page <b>design decision (ADR)</b>: <i>"we chose X, not Y, because of these numbers."</i> '
+                'Do the steps below <b>in order, top to bottom</b>. Do not skip ahead: the client curveball comes in Step 5.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="big"><b>Who does what</b> (decide in 30 seconds)<br>'
+                '👤 <b>Driver</b>: shares the screen and types<br>'
+                '📖 <b>Reader</b>: reads each step aloud to the team<br>'
+                '🤔 <b>Challenger</b>: asks "why not the other option?" at every choice<br>'
+                '🎤 <b>Presenter</b>: gives the 90-second pitch</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="stepbig"><b>Step 1 · Your team</b> (1 min)<br>Pick your team name and type your first names.</div>', unsafe_allow_html=True)
+    c1, c2 = st.columns([1, 1])
     team = c1.selectbox("Your team", list(dd.CURVEBALLS))
-    members = c1.text_input("Team members (first names)")
+    members = c2.text_input("Team members (first names)")
     cb = dd.CURVEBALLS[team]
-    c2.markdown(f'<div class="warn"><b>⚡ Curveball from the {cb["from"]}: {cb["title"]}</b><br>{cb["detail"]}<br><b>Evidence in this app:</b> {cb["evidence"]}<br><i>Topic: {cb["topic"]}</i></div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="stepbig"><b>Step 2 · Look at your lab numbers</b> (1 min)<br>These come from tabs 2, 3 and 4. They are the <b>evidence</b> for your decision. '
+                'If the box is empty, go back and do those tabs first.</div>', unsafe_allow_html=True)
     evd = {"mystery": sum(1 for v in S.myst_ok.values() if v) if S.myst_checked else None, "retrieval": S.retr, "evals": [], "cost": None}
     seen = {}
     for r in S.eval_runs:
         seen[r["prompt"]] = r
     evd["evals"] = list(seen.values())
     if S.batches:
-        b = S.batches[-1]
-        evd["cost"] = {"n": b["n"], "model": b["model"].split("·")[0].strip(), "per_ticket": b["cost_per_ticket"], "p50": b["p50"], "p95": b["p95"], "tokens": b["tokens_in"]}
+        bt = S.batches[-1]
+        evd["cost"] = {"n": bt["n"], "model": bt["model"].split("·")[0].strip(), "per_ticket": bt["cost_per_ticket"], "p50": bt["p50"], "p95": bt["p95"], "tokens": bt["tokens_in"]}
     if not (evd["cost"] or evd["evals"] or evd["mystery"] is not None):
         st.warning("Use tabs 2, 3 and 4 first, so your ADR gets real numbers.")
     else:
-        st.markdown("**Your numbers so far**")
         st.markdown(dd.evidence_lines(evd))
-    st.subheader("Your choices")
-    a, b2, c = st.columns(3)
-    th = a.radio("1 · Where do traces live?", dd.TRACE_HOME)
-    gate = b2.radio("2 · What must pass before a change goes live?", dd.GATES)
-    mdl = c.radio("3 · Model strategy", dd.MODELS)
-    alerts = st.multiselect("4 · What wakes a human at 3 a.m.? (pick 3 or 4)", dd.ALERTS, default=dd.ALERTS[:3])
-    bud = st.text_input("5 · The budget we promise (for example: under US$0.01 per ticket, alarm at 80% of US$500 a month)", "")
-    why = st.text_area("Why these choices? (2-3 lines a CFO and a CISO understand)", height=80)
-    rej = st.text_area("Which alternative did you reject, and why? (1-2 lines)", height=70)
-    ans = st.text_area(f"How does your design handle the curveball '{cb['title']}'? What changes, what does NOT change?", height=80)
+
+    st.markdown('<div class="stepbig"><b>Step 3 · The basic design: make 3 choices</b> (3 min)<br>Read each question aloud. Discuss. The Challenger asks "why not the others?" before you click.</div>', unsafe_allow_html=True)
+    th = st.radio("**Choice 1 · Where do traces live?**", dd.TRACE_HOME)
+    st.write("")
+    gate = st.radio("**Choice 2 · What must pass before a change goes live?**", dd.GATES)
+    st.write("")
+    mdl = st.radio("**Choice 3 · Model strategy**", dd.MODELS)
+    st.write("")
+    alerts = st.multiselect("**Choice 4 · What wakes a human at 3 a.m.?** (pick 3 or 4)", dd.ALERTS, default=dd.ALERTS[:3])
+    st.write("")
+    bud = st.text_input("**Choice 5 · The budget we promise.** For example: under US$0.01 per ticket, alarm at 80% of US$500 a month", "")
+
+    st.markdown('<div class="stepbig"><b>Step 4 · Explain your choices</b> (2 min)<br>Two or three short lines each. Write so that a CFO and a CISO both understand. Use a number from Step 2.</div>', unsafe_allow_html=True)
+    why = st.text_area("**Why these choices?** (2–3 lines)", height=90)
+    rej = st.text_area("**Which option did you reject, and why?** (1–2 lines)", height=80)
+
+    st.markdown('<div class="stepbig"><b>Step 5 · The client curveball</b> (3 min)<br>Only now, tick the box. The client has changed the rules. '
+                'Decide: what in your design <b>changes</b>, and what does <b>NOT</b> change?</div>', unsafe_allow_html=True)
+    show_cb = st.checkbox("⚡ Reveal the curveball", key=f"cb_{team}")
+    ans = ""
+    if show_cb:
+        st.markdown(f'<div class="warn"><b>⚡ Curveball from the {cb["from"]}: {cb["title"]}</b><br>{cb["detail"]}<br>'
+                    f'<b>Evidence in this app:</b> {cb["evidence"]}<br><i>Topic: {cb["topic"]}</i></div>', unsafe_allow_html=True)
+        ans = st.text_area(f"**How does your design handle '{cb['title']}'?** What changes, what does NOT change?", height=100)
+
+    st.markdown('<div class="stepbig"><b>Step 6 · Create the ADR</b> (30 seconds)<br>Press the button. The app writes the file for you with your lab numbers inside.</div>', unsafe_allow_html=True)
     if st.button("📝 Create our design decision (ADR)", type="primary"):
         md = dd.build_markdown(team, members, th, alerts, gate, mdl, bud, why, rej, ans, evd, mf.LABELS[provider])
         out = mf.ROOT / "teams" / team / "ADR-AskIT-05.md"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(md, encoding="utf-8")
-        st.success(f"Saved to {out}. Run SYNC.bat to push it. Now pitch it in 2 minutes.")
+        S.lessons["t8"] = ("<b>A design decision names the option you rejected and the number that proves your choice.</b> "
+                           "The client curveball changes part of the design, not all of it: say clearly which part.")
+        st.success(f"Saved to {out}. Run SYNC.bat to push it.")
         with st.expander("👀 Preview", expanded=True):
             st.markdown(md)
+    st.markdown('<div class="stepbig"><b>Step 7 · Pitch in 90 seconds</b><br>The Presenter says four things: ① <b>our decision</b> ② <b>one number that proves it</b> ③ <b>what we rejected and why</b> ④ <b>how the curveball changed us</b>.</div>', unsafe_allow_html=True)
     st.subheader("How the board scores you (0-5 each, 25 points to the leaderboard)")
     st.table(pd.DataFrame(dd.RUBRIC, columns=["Criterion", "What earns full marks"]))
+    st.info("📚 Bonus reading after class: `Day10\\Content\\Eval_Harness_FDE_Guide.html` (how a forward-deployed engineer builds an eval harness for a client).")
+    if S.lessons.get("t8"):
+        lesson_box(S.lessons["t8"])
+
+# ================================================================================================ tab 9
+with t9:
+    st.markdown("## 🎓 Lessons learnt")
+    st.caption("Each lesson unlocks when you answer the two thinking questions at the bottom of its tab (tab 8: when you create your ADR). Tab 7 has no lesson.")
+    names = {"t1": "1 · Run and trace", "t2": "2 · Find the failure", "t3": "3 · Cost report", "t4": "4 · Evals", "t5": "5 · See it in AWS", "t6": "6 · How it works", "t8": "8 · Team ADR"}
+    st.progress(len(S.lessons) / len(names), text=f"Lessons unlocked: {len(S.lessons)} of {len(names)}")
+    for k, nm in names.items():
+        if k in S.lessons:
+            st.markdown(f'<div class="lesson"><b class="h">🎓 Tab {nm}</b><br>{S.lessons[k]}</div>', unsafe_allow_html=True)
+        else:
+            st.markdown(f'<div class="lock">🔒 Tab {nm}: not unlocked yet. Do the tab, then answer its two questions.</div>', unsafe_allow_html=True)
+    if S.lessons:
+        txt = "# My lessons from Lab 10\n\n" + "\n\n".join(f"## Tab {names[k]}\n" + re.sub(r"<[^>]+>", "", S.lessons[k]) for k in names if k in S.lessons)
+        st.download_button("⬇ Download my lessons (.md)", txt, file_name="lab10_lessons.md")
